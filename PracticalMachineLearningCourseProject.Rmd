@@ -1,0 +1,172 @@
+---
+title: "Course Project of Practical Machine Learning"
+author: "Nick Lin"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+---
+
+## Goal
+It is to predict the manner in which exercisers did the exercise by using data from ccelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website[^web] (see the section on the Weight Lifting Exercise Dataset). And we are going to realize the class' framework, 'Components of a Predictor': question->input data->features->algorithm->parameters->evaluation, to build this prediction model.
+
+[^web]: http://groupware.les.inf.puc-rio.br/har
+```{r, message=FALSE}
+library(caret)
+library(rattle)
+```
+
+## Question
+Which type[^typ] of weight lifting exercise is performed given that data from ccelerometers on the belt, forearm, arm, and dumbell?
+
+[^typ]: There are five types of exercise: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+## Input Data
+The training data for this project are available [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv);
+The test data are available [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv).  Be noticed the test data set is used for submitting your predictions for automated grading(apparently, it got no the target variable "classe"), not for evaluating your built model such as out-of-sample error estimation.
+
+Download the files, and then read them in.
+```{r, cache=TRUE}
+if (!file.exists("./pml-training.csv")) {
+  fileURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+  download.file(fileURL, destfile = "./pml-training.csv", method = "curl")
+}
+if (!file.exists("./pml-testing.csv")) {
+  fileURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+  download.file(fileURL, destfile = "./pml-testing.csv", method = "curl")
+}
+trainData <- read.csv("./pml-training.csv", na.strings = c("NA", "", "\"\"", "#DIV/0!"))
+testData <- read.csv("./pml-testing.csv", na.strings = c("NA", "", "\"\"", "#DIV/0!"))
+```
+
+## Features
+Explore the data and preprocess it if needed before building models.
+```{r}
+dim(trainData)
+```
+There are 19,622 observations and 159 variables(except the target variable, "classe") in the training data set.
+```{r}
+summary(trainData)
+```
+After a preliminary feature exploration, we typically impute data in following directions:
+
+- Dealing Missing Value  
+At first, there might be variables having high ratio of missing value, we wonder the remaining nonNAs can still provide classification power, say, like NAs vs. nonNAs, and would like to leave them as they are. But after a series of tries on train(){caret}, we found some methods perform "omit" operation which deletes cases if a null encountered resulting in very sparse samples (200+) for training. Weighing the trade-off, we decide to drop variables having nulls to keep the samples.
+
+- Standardization/Transformation  
+Since the question is a multi-classification problem, non-linear one. We do not particularly standarize/transform variables.
+
+- Eliminating variable if less interpretative to the target or highly correlated to others  
+We reduce the number of candidate variables to save time by dropping zero-variance variables which have no discriminating power. As for correlation or colinearity, again, this is a classification problem, we do not put this issue in consideration.
+```{r, cache=TRUE}
+#find variables with nulls
+nullVars <- colnames(trainData[colSums(is.na(trainData)) > 0])
+#find variables with constant value, ie. zero-variance
+nzv <- nearZeroVar(trainData, saveMetrics = TRUE)
+print(nzv[nzv$zeroVar == TRUE,]) #list all zero-variance variables
+conVars <- rownames(nzv[nzv$zeroVar == TRUE,])
+#drop all variables found in previous steps, plus first 7 which are descriptive like participant's name and timestamp info
+screenedTrainData <- trainData[, ! names(trainData) %in% c(nullVars, conVars)][, -c(1:7)]
+```
+Finally, we get a downsized data, 52 candidate variables plus 1 target variable.  
+Then we split it into two independent sets, one for model building(60%), and the other for model evaluation(40%), ie. out-of-sample error.
+```{r, cache=TRUE}
+set.seed(1234)
+inTrain <- createDataPartition(screenedTrainData$classe, p=0.6, list=FALSE)
+myTraining <- screenedTrainData[inTrain,]
+myTesting <- screenedTrainData[-inTrain,]
+dim(myTraining); dim(myTesting)
+```
+
+## Algorithm/Parameters
+An algorithm usually is accompanied with several tuning parameters. We might try different combinations of algorithms and parameters, so we consider these two components as a whole as a stage of modeling cycle.
+
+We consider the following algorithms to develop the prediction model.
+
+1. Decision Tree  
+Intuitively selected because it's a classification problem, and considered as benchmark.
+
+2. Random Forest  
+One of most recommended approaches with significant performance.
+
+3. Boosting  
+One of most recommended approaches with significant performance.
+
+Then we utilize cross-validation resamplings specified in trainControl(){caret} to determine best parameter set, say, 4-fold cross-validation, instead of default bootstrapping which bit of underestimates the error and is computationally intensive.
+
+#### Decision Tree (method="rpart" in train()/{caret})
+```{r, cache=TRUE}
+set.seed(1234)
+modDT <- train(classe ~ ., data = myTraining, method = "rpart", trControl = trainControl(method = "cv", number = 4))
+fancyRpartPlot(modDT$finalModel)
+print(modDT)
+predTrainDT <- predict(modDT, myTraining)
+confusionMatrix(predTrainDT, myTraining$classe)
+```
+We can tell that cross-validation averaged accuracy is 51.04% (used to pick up best parameter set for modeling); in-sample accuracy estimate is 49.89%, applying final model with best parameter set to whole training data)
+
+#### Random Forest (method="rf" in train()/{caret})
+```{r, cache=TRUE, cache.lazy=FALSE}
+set.seed(1234)
+modRF <- train(classe ~ ., data = myTraining, method = "rf", trControl = trainControl(method = "cv", number = 4))
+print(modRF)
+predTrainRF <- predict(modRF, myTraining)
+confusionMatrix(predTrainRF, myTraining$classe)
+```
+Cross-validation averaged accuracy is 98.84%; in-sample accuracy estimate is 100%.
+
+#### Boosting (method="gbm" in train()/{caret})
+```{r, cache=TRUE, cache.lazy=FALSE}
+set.seed(1234)
+modBST <- train(classe ~ ., data = myTraining, method = "gbm", trControl = trainControl(method = "cv", number = 4), verbose = FALSE)
+print(modBST)
+predTrainBST <- predict(modBST, myTraining)
+confusionMatrix(predTrainBST, myTraining$classe)
+```
+Cross-validation averaged accuracy is 96.04%; in-sample accuracy estimate is 97.55%.
+
+## Evaluation
+Given that in-sample accuracy of each model, we got a basic idea of how they perform. Now we apply those models on the other independent data set to confirm each unbiased estimate of error rate.
+
+#### Decision Tree
+```{r}
+predTestDT <- predict(modDT, myTesting)
+confusionMatrix(predTestDT, myTesting$classe)
+```
+The unbiased estimate of out-of-sample error is (1-0.4904)=50.96%.
+
+#### Random Forest
+```{r}
+predTestRF <- predict(modRF, myTesting)
+confusionMatrix(predTestRF, myTesting$classe)
+```
+The unbiased estimate of out-of-sample error is (1-0.9892)=1.08%
+
+#### Boosting
+```{r}
+predTestBST <- predict(modBST, myTesting)
+confusionMatrix(predTestBST, myTesting$classe)
+```
+The unbiased estimate of out-of-sample error is (1-0.9607)=3.93%
+
+The order of their accuracies: Random Forest(0.9892) > Boosting(0.9607) >> Decision Tree(0.4904). Random Forest model is overwhelming.
+
+We can either pick Random Forest model as our champion model and apply it on the project submission cases.
+
+Or we can think about improving the accuracy by model stacking or majority vote, etc. Let's compare the predictions on the test set across models and actual values. Retrieve cases in which the prediction by Random Forest is incorrect, and check out what the predictions are made by the other two.
+```{r}
+predTest <- data.frame(predTestDT, predTestRF, predTestBST, classe = myTesting$classe)
+table(predTest[myTesting$classe!=predTestRF, -2])
+```
+We can tell the other two, Decision Tree and Boosting, can not come to significant agreement to improve the accuracy. Let's directly apply Random Forest model on the 20 cases for submission.
+
+## Prediction on 20 cases for Project Submission
+```{r}
+ans <- predict(modRF, testData)
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(ans)
+```
